@@ -147,6 +147,7 @@ IOStatus DBImpl::SyncClosedLogs(JobContext* job_context) {
   return io_s;
 }
 
+//wq:真正执行非atomic_flush(即单个imm的flush)的函数,类似LevelDB的CompactMemTable()  wqtodo FlushRequest的第二个参数貌似在非atomic_flush里也没有用?因为根本没有传进来...
 Status DBImpl::FlushMemTableToOutputFile(
     ColumnFamilyData* cfd, const MutableCFOptions& mutable_cf_options,
     bool* made_progress, JobContext* job_context,
@@ -162,7 +163,7 @@ Status DBImpl::FlushMemTableToOutputFile(
   assert(cfd->imm()->IsFlushPending());
   assert(versions_);
   assert(versions_->GetColumnFamilySet());
-  // If there are more than one column families, we need to make sure that
+  // If there are more than one column families, we need to make sure that   wqtodo 阅读注释
   // all the log files except the most recent one are synced. Otherwise if
   // the host crashes after flushing and before WAL is persistent, the
   // flushed SST may contain data from write batches whose updates to
@@ -205,6 +206,7 @@ Status DBImpl::FlushMemTableToOutputFile(
   // To address this, we make sure NotifyOnFlushBegin() executes after memtable
   // picking so that no new snapshot can be taken between the two functions.
 
+  //wq:新封装了一个FlushJob类,用来完成LevelDB中一个CompactMemTable()就能完成的所有操作
   FlushJob flush_job(
       dbname_, cfd, immutable_db_options_, mutable_cf_options, max_memtable_id,
       file_options_for_compaction_, versions_.get(), &mutex_, &shutting_down_,
@@ -236,6 +238,7 @@ Status DBImpl::FlushMemTableToOutputFile(
   // num_flush_not_started_ needs to be rollback.
   TEST_SYNC_POINT("DBImpl::FlushMemTableToOutputFile:BeforePickMemtables");
   if (s.ok()) {
+    //wq:1.flush_job第一步,选择待flush的imms。本质上调用了cfd中的方法             LevelDB没有这个烦恼.毕竟咱就一个imm 2333
     flush_job.PickMemTable();
     need_cancel = true;
   }
@@ -255,6 +258,7 @@ Status DBImpl::FlushMemTableToOutputFile(
   // and EventListener callback will be called when the db_mutex
   // is unlocked by the current thread.
   if (s.ok()) {
+    //wq:2.flush_job第二步,执行Flush操作
     s = flush_job.Run(&logs_with_prep_tracker_, &file_meta,
                       &switched_to_mempurge);
     need_cancel = false;
@@ -354,14 +358,16 @@ Status DBImpl::FlushMemTableToOutputFile(
   TEST_SYNC_POINT("DBImpl::FlushMemTableToOutputFile:Finish");
   return s;
 }
-
+//wq:真正执行Flush操作的函数,类似LevelDB中的CompactMemTable()
 Status DBImpl::FlushMemTablesToOutputFiles(
     const autovector<BGFlushArg>& bg_flush_args, bool* made_progress,
     JobContext* job_context, LogBuffer* log_buffer, Env::Priority thread_pri) {
+  //wq:atomic_flush保证本次flush中的所有ColumnFaily要么同时写入成功，要么同时写入失败.
   if (immutable_db_options_.atomic_flush) {
     return AtomicFlushMemTablesToOutputFiles(
         bg_flush_args, made_progress, job_context, log_buffer, thread_pri);
   }
+  //wq:非atomic_flush情况下,bg_flush_args大小恒定为1.   todo这么来看,如果没有atomic_flush的话，FlushRequest本质上也不用vector?
   assert(bg_flush_args.size() == 1);
   std::vector<SequenceNumber> snapshot_seqs;
   SequenceNumber earliest_write_conflict_snapshot;
@@ -374,6 +380,7 @@ Status DBImpl::FlushMemTablesToOutputFiles(
   MutableCFOptions mutable_cf_options_copy = *cfd->GetLatestMutableCFOptions();
   SuperVersionContext* superversion_context =
       bg_flush_arg.superversion_context_;
+  //wq:真正执行Flush操作的方法
   Status s = FlushMemTableToOutputFile(
       cfd, mutable_cf_options_copy, made_progress, job_context,
       superversion_context, snapshot_seqs, earliest_write_conflict_snapshot,
@@ -2743,11 +2750,13 @@ void DBImpl::UnscheduleFlushCallback(void* arg) {
   TEST_SYNC_POINT("DBImpl::UnscheduleFlushCallback");
 }
 
+//wq:Flush线程调用BGWorkFlush后,本质上会调用BackgroundFlush这个方法。
 Status DBImpl::BackgroundFlush(bool* made_progress, JobContext* job_context,
                                LogBuffer* log_buffer, FlushReason* reason,
                                Env::Priority thread_pri) {
   mutex_.AssertHeld();
 
+  //wq:1.筛选Flush操作需要的参数(包括选择FlushRequest、选择其中具体的cfd等)
   Status status;
   *reason = FlushReason::kOthers;
   // If BG work is stopped due to an error, but a recovery is in progress,
@@ -2764,10 +2773,11 @@ Status DBImpl::BackgroundFlush(bool* made_progress, JobContext* job_context,
     return status;
   }
 
-  autovector<BGFlushArg> bg_flush_args;
+  autovector<BGFlushArg> bg_flush_args;   //wq:BGFlushArg存储一次Flush需要的Args
   std::vector<SuperVersionContext>& superversion_contexts =
       job_context->superversion_contexts;
   autovector<ColumnFamilyData*> column_families_not_to_flush;
+  //wq:当flush_queue_非空时,while循环获取flush_queue_队列头元素。
   while (!flush_queue_.empty()) {
     // This cfd is already referenced
     const FlushRequest& flush_req = PopFirstFromFlushQueue();
@@ -2794,7 +2804,7 @@ Status DBImpl::BackgroundFlush(bool* made_progress, JobContext* job_context,
       break;
     }
   }
-
+  //wq:上面的代码中,一次FlushRequset中如果有至少1个是OK的,那么bg_flush_args就不为空,就可以走后面的逻辑.
   if (!bg_flush_args.empty()) {
     auto bg_job_limits = GetBGJobLimits();
     for (const auto& arg : bg_flush_args) {
@@ -2809,6 +2819,7 @@ Status DBImpl::BackgroundFlush(bool* made_progress, JobContext* job_context,
           bg_job_limits.max_compactions, bg_flush_scheduled_,
           bg_compaction_scheduled_);
     }
+    //wq:2.执行真正的Flush操作 实际上,如果没有使用atomic_flush,那么bg_flush_args.size()==1
     status = FlushMemTablesToOutputFiles(bg_flush_args, made_progress,
                                          job_context, log_buffer, thread_pri);
     TEST_SYNC_POINT("DBImpl::BackgroundFlush:BeforeFlush");

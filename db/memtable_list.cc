@@ -327,6 +327,7 @@ bool MemTableListVersion::TrimHistory(autovector<MemTable*>* to_delete,
 
 // Returns true if there is at least one memtable on which flush has
 // not yet started.
+//wq:实际上这里是为了避免多线程同时Flush同一个cfd的不同imm,造成一种同步问题。
 bool MemTableList::IsFlushPending() const {
   if ((flush_requested_ && num_flush_not_started_ > 0) ||
       (num_flush_not_started_ >= min_write_buffer_number_to_merge_)) {
@@ -345,7 +346,7 @@ void MemTableList::PickMemtablesToFlush(uint64_t max_memtable_id,
   const auto& memlist = current_->memlist_;
   bool atomic_flush = false;
 
-  // Note: every time MemTableList::Add(mem) is called, it adds the new mem
+  // Note: every time MemTableList::Add(mem) is called, it adds the new mem   wqtodo 这里的注释和下面for循环里的细节需要去看
   // at the FRONT of the memlist (memlist.push_front(mem)). Therefore, by
   // iterating through the memlist starting at the end, the vector<MemTable*>
   // ret is filled with memtables already sorted in increasing MemTable ID.

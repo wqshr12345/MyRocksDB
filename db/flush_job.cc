@@ -180,6 +180,7 @@ void FlushJob::PickMemTable() {
   uint64_t max_next_log_number = 0;
 
   // Save the contents of the earliest memtable as a new Table
+  //wq:将所有可以被flush的imm都添加到vector中. 
   cfd_->imm()->PickMemtablesToFlush(max_memtable_id_, &mems_,
                                     &max_next_log_number);
   if (mems_.empty()) {
@@ -238,6 +239,7 @@ Status FlushJob::Run(LogsWithPrepTracker* prep_tracker, FileMetaData* file_meta,
     prev_cpu_read_nanos = IOSTATS(cpu_read_nanos);
   }
   Status mempurge_s = Status::NotFound("No MemPurge.");
+  //wqtodo 下面这一串没有核心代码，暂时不读，未来再搞懂它是干啥的
   if ((db_options_.experimental_mempurge_threshold > 0.0) &&
       (cfd_->GetFlushReason() == FlushReason::kWriteBufferFull) &&
       (!mems_.empty()) && MemPurgeDecider()) {
@@ -272,6 +274,7 @@ Status FlushJob::Run(LogsWithPrepTracker* prep_tracker, FileMetaData* file_meta,
     s = Status::OK();
   } else {
     // This will release and re-acquire the mutex.
+    //真真正正核心的方法,类似LevelDB中的WriteLevel0Table().RocksDB直接封装在了FlushJob的Run()中.
     s = WriteLevel0Table();
   }
 
@@ -288,6 +291,7 @@ Status FlushJob::Run(LogsWithPrepTracker* prep_tracker, FileMetaData* file_meta,
   } else if (write_manifest_) {
     TEST_SYNC_POINT("FlushJob::InstallResults");
     // Replace immutable memtable with the generated Table
+    //wq:持久化filemetadata的核心方法
     s = cfd_->imm()->TryInstallMemtableFlushResults(
         cfd_, mutable_cf_options_, mems_, prep_tracker, versions_, db_mutex_,
         meta_.fd.GetNumber(), &job_context_->memtables_to_free, db_directory_,
@@ -806,8 +810,8 @@ Status FlushJob::WriteLevel0Table() {
   Status s;
 
   std::vector<BlobFileAddition> blob_file_additions;
-
-  {
+  //21todo
+  {  
     auto write_hint = cfd_->CalculateSSTWriteHint(0);
     Env::IOPriority io_priority = GetRateLimiterPriorityForWrite();
     db_mutex_->Unlock();
