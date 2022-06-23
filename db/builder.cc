@@ -171,6 +171,7 @@ Status BuildTable(
           ioptions.file_checksum_gen_factory.get(),
           tmp_set.Contains(FileType::kTableFile), false));
 
+      //wq:一个builder的生成里面嵌套了一万个方法，麻了。
       builder = NewTableBuilder(tboptions, file_writer.get());
     }
 

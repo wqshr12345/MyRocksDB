@@ -274,7 +274,7 @@ Status FlushJob::Run(LogsWithPrepTracker* prep_tracker, FileMetaData* file_meta,
     s = Status::OK();
   } else {
     // This will release and re-acquire the mutex.
-    //真真正正核心的方法,类似LevelDB中的WriteLevel0Table().RocksDB直接封装在了FlushJob的Run()中.
+    //wq:1.真真正正核心的方法,类似LevelDB中的WriteLevel0Table().RocksDB直接封装在了FlushJob的Run()中.
     s = WriteLevel0Table();
   }
 
@@ -291,7 +291,7 @@ Status FlushJob::Run(LogsWithPrepTracker* prep_tracker, FileMetaData* file_meta,
   } else if (write_manifest_) {
     TEST_SYNC_POINT("FlushJob::InstallResults");
     // Replace immutable memtable with the generated Table
-    //wq:持久化filemetadata的核心方法
+    //wq:2.持久化filemetadata的核心方法
     s = cfd_->imm()->TryInstallMemtableFlushResults(
         cfd_, mutable_cf_options_, mems_, prep_tracker, versions_, db_mutex_,
         meta_.fd.GetNumber(), &job_context_->memtables_to_free, db_directory_,
@@ -801,6 +801,7 @@ bool FlushJob::MemPurgeDecider() {
           threshold);
 }
 
+//真真正正核心的方法,类似LevelDB中的WriteLevel0Table().RocksDB直接封装在了FlushJob的Run()中.
 Status FlushJob::WriteLevel0Table() {
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_FLUSH_WRITE_L0);
@@ -810,7 +811,6 @@ Status FlushJob::WriteLevel0Table() {
   Status s;
 
   std::vector<BlobFileAddition> blob_file_additions;
-  //21todo
   {  
     auto write_hint = cfd_->CalculateSSTWriteHint(0);
     Env::IOPriority io_priority = GetRateLimiterPriorityForWrite();
@@ -911,6 +911,7 @@ Status FlushJob::WriteLevel0Table() {
       IOStatus io_s;
       const std::string* const full_history_ts_low =
           (full_history_ts_low_.empty()) ? nullptr : &full_history_ts_low_;
+      //wq:1.下面开始是RocksDB构造table的核心代码.BuildTable()类似LevelDB中的BuildTable()
       TableBuilderOptions tboptions(
           *cfd_->ioptions(), mutable_cf_options_, cfd_->internal_comparator(),
           cfd_->int_tbl_prop_collector_factories(), output_compression_,
@@ -921,6 +922,7 @@ Status FlushJob::WriteLevel0Table() {
           meta_.fd.GetNumber());
       const SequenceNumber job_snapshot_seq =
           job_context_->GetJobSnapshotSequence();
+      //wq:关键代码!!
       s = BuildTable(
           dbname_, versions_, db_options_, tboptions, file_options_,
           cfd_->table_cache(), iter.get(), std::move(range_del_iters), &meta_,
@@ -978,6 +980,7 @@ Status FlushJob::WriteLevel0Table() {
   // should not be added to the manifest.
   const bool has_output = meta_.fd.GetFileSize() > 0;
 
+  //wq:2.将本次的flush信息写入VersionEdit中,准备更新下一个版本
   if (s.ok() && has_output) {
     TEST_SYNC_POINT("DBImpl::FlushJob:SSTFileCreated");
     // if we have more than 1 background thread, then we cannot
@@ -1001,6 +1004,7 @@ Status FlushJob::WriteLevel0Table() {
   mems_[0]->SetFlushJobInfo(GetFlushJobInfo());
 #endif  // !ROCKSDB_LITE
 
+  //wq:从这里看,RocksDB为我们设计了一套统计各种时间的东西?
   // Note that here we treat flush as level 0 compaction in internal stats
   InternalStats::CompactionStats stats(CompactionReason::kFlush, 1);
   const uint64_t micros = clock_->NowMicros() - start_micros;
