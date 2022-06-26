@@ -35,6 +35,8 @@ enum CompactionStyle : char {
   // via CompactFiles().
   // Not supported in ROCKSDB_LITE
   kCompactionStyleNone = 0x3,
+  //wqchange
+  kCompactionStyleNvm = 0x4,
 };
 
 // In Level-based compaction, it Determines which file from a level to be

@@ -2700,6 +2700,9 @@ uint32_t GetExpiredTtlFilesCount(const ImmutableOptions& ioptions,
 }
 }  // anonymous namespace
 
+//wq:计算每个level的score 这里并不会计算一个best_level和best_score.因为rocksdb是多线程compaction,所以一次选多个level进行compaction也无所谓
+//1.用于在NeedsCompaction()时判断该version是否需要compaction.
+//2.用于在PickCompaction()时选择合适的输入输出level.
 void VersionStorageInfo::ComputeCompactionScore(
     const ImmutableOptions& immutable_options,
     const MutableCFOptions& mutable_cf_options) {
@@ -2717,14 +2720,15 @@ void VersionStorageInfo::ComputeCompactionScore(
       // file size is small (perhaps because of a small write-buffer
       // setting, or very high compression ratios, or lots of
       // overwrites/deletions).
-      int num_sorted_runs = 0;
-      uint64_t total_size = 0;
+      int num_sorted_runs = 0;  //L0的SST File个数
+      uint64_t total_size = 0;  //L0的SST file总大小
       for (auto* f : files_[level]) {
         if (!f->being_compacted) {
           total_size += f->compensated_file_size;
           num_sorted_runs++;
         }
       }
+      //L0在Universal Compaction下的策略
       if (compaction_style_ == kCompactionStyleUniversal) {
         // For universal compaction, we use level0 score to indicate
         // compaction score for the whole DB. Adding other levels as if
@@ -2761,7 +2765,13 @@ void VersionStorageInfo::ComputeCompactionScore(
                   immutable_options, mutable_cf_options, files_[level])),
               score);
         }
-      } else {
+      //wqchange
+      //在我们的策略下,L0层的score应当跟L0的file size相关而非file个数
+      }else if (compaction_style_ == kCompactionStyleNvm){
+        //wq:MaxBytesForLevel()本质上返回level_max_bytes_数组的值，其在CalculateBaseBytes()中被初始化
+        score = static_cast<double>(total_size) /MaxBytesForLevel(level);
+      }else {
+        //在RocksDB的level策略下,L0的score既和L0的file个数相关,又和L0的file大小有关.如果file size过大,也会使得score超过1
         score = static_cast<double>(num_sorted_runs) /
                 mutable_cf_options.level0_file_num_compaction_trigger;
         if (compaction_style_ == kCompactionStyleLevel && num_levels() > 1) {
@@ -2785,6 +2795,7 @@ void VersionStorageInfo::ComputeCompactionScore(
               std::max(score, static_cast<double>(total_size) / l0_target_size);
         }
       }
+    //非Level0的compaction score的选择.
     } else {
       // Compute the ratio of current size to size limit.
       uint64_t level_bytes_no_compacting = 0;
@@ -2802,6 +2813,9 @@ void VersionStorageInfo::ComputeCompactionScore(
 
   // sort all the levels based on their score. Higher scores get listed
   // first. Use bubble sort because the number of entries are small.
+  //wq:简单的冒泡排序,对所有compaction_score从大到小排序.    
+  //因为这里的排序,所以compaction_level_[i]不一定对应level i,这也是compaction_level_这个数组存在的意义
+  //另外,这里的排序只涉及到了除最后一层.这是默认最后一层不论score多少,顺位都在最后吗?
   for (int i = 0; i < num_levels() - 2; i++) {
     for (int j = i + 1; j < num_levels() - 1; j++) {
       if (compaction_score_[i] < compaction_score_[j]) {
@@ -3695,6 +3709,7 @@ uint64_t VersionStorageInfo::MaxBytesForLevel(int level) const {
   return level_max_bytes_[level];
 }
 
+//wq:初始化level_max_bytes_数组，为ComputeCompactionScore()做准备。
 void VersionStorageInfo::CalculateBaseBytes(const ImmutableOptions& ioptions,
                                             const MutableCFOptions& options) {
   // Special logic to set number of sorted runs.
@@ -3714,9 +3729,11 @@ void VersionStorageInfo::CalculateBaseBytes(const ImmutableOptions& ioptions,
 
   level_max_bytes_.resize(ioptions.num_levels);
   if (!ioptions.level_compaction_dynamic_level_bytes) {
-    base_level_ = (ioptions.compaction_style == kCompactionStyleLevel) ? 1 : -1;
+    //wqchange
+    base_level_ = (ioptions.compaction_style == kCompactionStyleLevel || ioptions.compaction_style == kCompactionStyleNvm) ? 1 : -1;
 
     // Calculate for static bytes base case
+    //wqtodo:在这种情况下，l0和l1的最大bytes是一样的。。。需要我找机会去改一下
     for (int i = 0; i < ioptions.num_levels; ++i) {
       if (i == 0 && ioptions.compaction_style == kCompactionStyleUniversal) {
         level_max_bytes_[i] = options.max_bytes_for_level_base;
@@ -3730,6 +3747,7 @@ void VersionStorageInfo::CalculateBaseBytes(const ImmutableOptions& ioptions,
       }
     }
   } else {
+    //wqtodo:level_compaction_dynamic_level_bytes情况下，我们的max_bytes应该怎么设置？
     uint64_t max_level_size = 0;
 
     int first_non_empty_level = -1;

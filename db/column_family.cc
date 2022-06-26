@@ -1094,6 +1094,7 @@ void ColumnFamilyData::CreateNewMemtable(
   mem_->Ref();
 }
 
+//wqtodo:这里应该定义一个新的compaction_picker类
 bool ColumnFamilyData::NeedsCompaction() const {
   return !mutable_cf_options_.disable_auto_compactions &&
          compaction_picker_->NeedsCompaction(current_->storage_info());
